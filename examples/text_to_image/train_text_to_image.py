@@ -510,6 +510,7 @@ def parse_args():
         "--running_as_docker",
         action="store_true",
     )
+
     parser.add_argument(
         "--train_attention_only",
         action="store_true",
@@ -646,6 +647,12 @@ def main():
     text_encoder.requires_grad_(False)
     unet.train()
 
+    def get_parameters(model=unet):
+        if args.train_attention_only:
+            return filter(lambda p: p.requires_grad, model.parameters())
+        else:
+            return model.parameters()
+
     # Create EMA for the unet.
     if args.use_ema:
         ema_unet = UNet2DConditionModel.from_pretrained(
@@ -727,13 +734,8 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    if args.train_attention_only:
-        params = filter(lambda p: p.requires_grad, unet.parameters())
-    else:
-        params = unet.parameters()
-
     optimizer = optimizer_cls(
-        params,
+        get_parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -1016,7 +1018,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
+                    accelerator.clip_grad_norm_(get_parameters(), args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -1091,8 +1093,8 @@ def main():
             if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
                 if args.use_ema:
                     # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_unet.store(unet.parameters())
-                    ema_unet.copy_to(unet.parameters())
+                    ema_unet.store(get_parameters())
+                    ema_unet.copy_to(get_parameters())
                 log_validation(
                     vae,
                     text_encoder,
@@ -1105,14 +1107,14 @@ def main():
                 )
                 if args.use_ema:
                     # Switch back to the original UNet parameters.
-                    ema_unet.restore(unet.parameters())
+                    ema_unet.restore(get_parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         unet = accelerator.unwrap_model(unet)
         if args.use_ema:
-            ema_unet.copy_to(unet.parameters())
+            ema_unet.copy_to(get_parameters())
 
         pipeline = StableDiffusionPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
