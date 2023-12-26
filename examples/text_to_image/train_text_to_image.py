@@ -1107,8 +1107,8 @@ def main():
             if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
                 if args.use_ema:
                     # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_unet.store(get_parameters())
-                    ema_unet.copy_to(get_parameters())
+                    ema_unet.store(unet.parameters())
+                    ema_unet.copy_to(unet.parameters())
                 log_validation(
                     vae,
                     text_encoder,
@@ -1121,14 +1121,14 @@ def main():
                 )
                 if args.use_ema:
                     # Switch back to the original UNet parameters.
-                    ema_unet.restore(get_parameters())
+                    ema_unet.restore(unet.parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         unet = accelerator.unwrap_model(unet)
         if args.use_ema:
-            ema_unet.copy_to(get_parameters())
+            ema_unet.copy_to(unet.parameters())
 
         pipeline = StableDiffusionPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
