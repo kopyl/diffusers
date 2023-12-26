@@ -515,6 +515,10 @@ def parse_args():
         "--train_attention_only",
         action="store_true",
     )
+    parser.add_argument(
+        "--train_all_but_attention",
+        action="store_true",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -639,7 +643,15 @@ def main():
             if "attention" not in name:
                 param.requires_grad_(False)
 
+    def freeze_all_unet_layers_except_attention(model):
+        for name, param in model.named_parameters():
+            if "attention" in name:
+                param.requires_grad_(False)
+
     if args.train_attention_only:
+        freeze_all_unet_layers_except_attention(unet)
+
+    if args.train_all_but_attention:
         freeze_all_unet_layers_except_attention(unet)
 
     # Freeze vae and text_encoder and set unet to trainable
@@ -649,6 +661,8 @@ def main():
 
     def get_parameters(model=unet):
         if args.train_attention_only:
+            return filter(lambda p: p.requires_grad, model.parameters())
+        elif args.train_all_but_attention:
             return filter(lambda p: p.requires_grad, model.parameters())
         else:
             return model.parameters()
@@ -1093,8 +1107,8 @@ def main():
             if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
                 if args.use_ema:
                     # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_unet.store(get_parameters())
-                    ema_unet.copy_to(get_parameters())
+                    ema_unet.store(unet.parameters())
+                    ema_unet.copy_to(unet.parameters())
                 log_validation(
                     vae,
                     text_encoder,
@@ -1107,14 +1121,14 @@ def main():
                 )
                 if args.use_ema:
                     # Switch back to the original UNet parameters.
-                    ema_unet.restore(get_parameters())
+                    ema_unet.restore(unet.parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         unet = accelerator.unwrap_model(unet)
         if args.use_ema:
-            ema_unet.copy_to(get_parameters())
+            ema_unet.copy_to(unet.parameters())
 
         pipeline = StableDiffusionPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
