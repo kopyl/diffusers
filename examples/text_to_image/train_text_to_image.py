@@ -511,11 +511,6 @@ def parse_args():
         action="store_true",
     )
 
-    parser.add_argument(
-        "--train_attention_only",
-        action="store_true",
-    )
-
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -634,24 +629,10 @@ def main():
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision
     )
 
-    def freeze_all_unet_layers_except_attention(model):
-        for name, param in model.named_parameters():
-            if "attention" not in name:
-                param.requires_grad_(False)
-
-    if args.train_attention_only:
-        freeze_all_unet_layers_except_attention(unet)
-
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     unet.train()
-
-    def get_parameters(model=unet):
-        if args.train_attention_only:
-            return filter(lambda p: p.requires_grad, model.parameters())
-        else:
-            return model.parameters()
 
     # Create EMA for the unet.
     if args.use_ema:
