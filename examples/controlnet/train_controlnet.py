@@ -116,6 +116,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, acceler
         )
 
     image_logs = []
+    images_order = 0
 
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
         validation_image = Image.open(validation_image).convert("RGB")
@@ -125,7 +126,12 @@ def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, acceler
         for _ in range(args.num_validation_images):
             with torch.autocast("cuda"):
                 image = pipeline(
-                    validation_prompt, validation_image, num_inference_steps=20, generator=generator
+                    validation_prompt,
+                    validation_image,
+                    num_inference_steps=20,
+                    generator=generator,
+                    width=args.resolution,
+                    height=args.resolution
                 ).images[0]
 
             images.append(image)
@@ -133,6 +139,12 @@ def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, acceler
         image_logs.append(
             {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
         )
+
+        image_grid(images, 1, len(images)).save(os.path.join(args.output_dir, "images", f"{step}_{images_order}_{'-'.join(validation_prompt.split())}.png"))
+        images_order += 1
+
+    del pipeline
+    torch.cuda.empty_cache()
 
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
@@ -284,6 +296,14 @@ def parse_args(input_args=None):
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
+        ),
+    )
+    parser.add_argument(
+        "--conditioning_image_resolution",
+        type=int,
+        default=512,
+        help=(
+            "The resolution for conditioning images, all the images in the train/validation dataset will be resized to"
         ),
     )
     parser.add_argument(
@@ -542,6 +562,11 @@ def parse_args(input_args=None):
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument(
+        "--save_controlnet_only",
+        action="store_true",
+        help="Whether or not to save only the Controlnet model.",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -670,8 +695,8 @@ def make_train_dataset(args, tokenizer, accelerator):
 
     conditioning_image_transforms = transforms.Compose(
         [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution),
+            transforms.Resize(args.conditioning_image_resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(args.conditioning_image_resolution),
             transforms.ToTensor(),
         ]
     )
@@ -748,6 +773,14 @@ def main(args):
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
+
+        if args.save_controlnet_only:
+            os.makedirs(os.path.join(args.output_dir, "controlnet"), exist_ok=True)
+
+        elif args.checkpointing_steps is not None:
+            os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
+
+        os.makedirs(os.path.join(args.output_dir, "images"), exist_ok=True)
 
         if args.push_to_hub:
             repo_id = create_repo(
@@ -1082,9 +1115,18 @@ def main(args):
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
+                        if args.save_controlnet_only:
+                            save_path = os.path.join(args.output_dir, "controlnet", str(global_step))
+                            try:
+                                controlnet.module.save_pretrained(save_path)
+                            except AttributeError:
+                                controlnet.save_pretrained(save_path)
+                            logger.info(f"Saved state to {save_path}")
+
+                        else:
+                            save_path = os.path.join(args.output_dir, "checkpoints", str(global_step))
+                            accelerator.save_state(save_path)
+                            logger.info(f"Saved state to {save_path}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
                         image_logs = log_validation(
