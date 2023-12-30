@@ -643,7 +643,7 @@ def main():
             if "attention" not in name:
                 param.requires_grad_(False)
 
-    def freeze_all_unet_layers_except_attention(model):
+    def freeze_only_attention_layers(model):
         for name, param in model.named_parameters():
             if "attention" in name:
                 param.requires_grad_(False)
@@ -652,7 +652,7 @@ def main():
         freeze_all_unet_layers_except_attention(unet)
 
     if args.train_all_but_attention:
-        freeze_all_unet_layers_except_attention(unet)
+        freeze_only_attention_layers(unet)
 
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
