@@ -515,10 +515,6 @@ def parse_args():
         "--train_attention_only",
         action="store_true",
     )
-    parser.add_argument(
-        "--train_all_but_attention",
-        action="store_true",
-    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -643,16 +639,8 @@ def main():
             if "attention" not in name:
                 param.requires_grad_(False)
 
-    def freeze_only_attention_layers(model):
-        for name, param in model.named_parameters():
-            if "attention" in name:
-                param.requires_grad_(False)
-
     if args.train_attention_only:
         freeze_all_unet_layers_except_attention(unet)
-
-    if args.train_all_but_attention:
-        freeze_only_attention_layers(unet)
 
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
@@ -661,8 +649,6 @@ def main():
 
     def get_parameters(model=unet):
         if args.train_attention_only:
-            return filter(lambda p: p.requires_grad, model.parameters())
-        elif args.train_all_but_attention:
             return filter(lambda p: p.requires_grad, model.parameters())
         else:
             return model.parameters()
@@ -749,7 +735,7 @@ def main():
         optimizer_cls = torch.optim.AdamW
 
     optimizer = optimizer_cls(
-        get_parameters(),
+        unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -1032,7 +1018,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(get_parameters(), args.max_grad_norm)
+                    accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
