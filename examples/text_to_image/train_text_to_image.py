@@ -212,6 +212,10 @@ def parse_args():
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
+        "--train_unet_from_scratch_config",
+        type=str,
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -625,9 +629,13 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
 
-    unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision
-    )
+    if args.train_unet_from_scratch_config is not None:
+        config = UNet2DConditionModel.load_config(args.pretrained_model_name_or_path, subfolder="unet")
+        unet = UNet2DConditionModel.from_config(config)
+    else:
+        unet = UNet2DConditionModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision
+        )
 
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
