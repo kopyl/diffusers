@@ -514,6 +514,11 @@ def parse_args():
         "--running_as_docker",
         action="store_true",
     )
+    parser.add_argument(
+        "--prepend_characters_to_all_prompts",
+        type=str,
+        default=None,
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -755,6 +760,23 @@ def main():
         )
         # See more about loading custom images at
         # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+
+
+    def mapping(batch, indices):
+        batch['text'] = list(
+            map(
+                lambda text: f"monochrome {text}",
+                batch['text']
+            )
+        )
+        if indices[0] == 0:
+            new_text_sample = batch['text'][0]
+            print(f'{new_text_sample=}')
+        return batch
+
+
+    if args.prepend_characters_to_all_prompts is not None:
+        dataset = dataset.map(mapping, batched=True, with_indices=True)
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
