@@ -776,7 +776,7 @@ def main():
 
 
     if args.prepend_characters_to_all_prompts is not None:
-        dataset = dataset.map(mapping, batched=True, with_indices=True)
+        dataset = dataset.map(mapping, batched=True, with_indices=True, keep_in_memory=True)
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
