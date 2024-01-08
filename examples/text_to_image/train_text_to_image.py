@@ -765,7 +765,7 @@ def main():
     def mapping(batch, indices):
         batch['text'] = list(
             map(
-                lambda text: f"monochrome {text}",
+                lambda text: f"{args.prepend_characters_to_all_prompts} {text}",
                 batch['text']
             )
         )
