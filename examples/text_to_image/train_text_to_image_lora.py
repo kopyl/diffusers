@@ -173,13 +173,17 @@ def parse_args():
         help="The column of the dataset containing a caption or a list of captions.",
     )
     parser.add_argument(
-        "--validation_prompt", type=str, default=None, help="A prompt that is sampled during training for inference."
+        "--validation_prompts",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--num_validation_images",
         type=int,
         default=4,
-        help="Number of images that should be generated during validation with `validation_prompt`.",
+        help="Number of images that should be generated during validation with `validation_prompts`.",
     )
     parser.add_argument(
         "--validation_epochs",
@@ -187,7 +191,7 @@ def parse_args():
         default=1,
         help=(
             "Run fine-tuning validation every X epochs. The validation process consists of running the prompt"
-            " `args.validation_prompt` multiple times: `args.num_validation_images`."
+            " `args.validation_prompts` multiple times: `args.num_validation_images`."
         ),
     )
     parser.add_argument(
@@ -670,8 +674,8 @@ def main():
                 unet,
         ):
             logger.info(
-                f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-                f" {args.validation_prompt}."
+                f"Running validation... \n Generating {args.num_validation_images} images with prompts:"
+                f" {args.validation_prompts}."
             )
             # create pipeline
             pipeline = DiffusionPipeline.from_pretrained(
@@ -688,26 +692,36 @@ def main():
             generator = torch.Generator(device=accelerator.device)
             if args.seed is not None:
                 generator = generator.manual_seed(args.seed)
+            
             images = []
-            with torch.cuda.amp.autocast():
-                for _ in range(args.num_validation_images):
-                    images.append(
-                        pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0]
-                    )
-
+            for i in range(len(args.validation_prompts)):
+                with torch.autocast("cuda"):
+                    image = pipeline(
+                        args.validation_prompts[i],
+                        num_inference_steps=args.num_inference_steps,
+                        generator=generator,
+                        width=args.resolution,
+                        height=args.resolution,
+                        guidance_scale=args.guidance_scale,
+                    ).images[0]
+        
+                images.append(image)
+        
             for tracker in accelerator.trackers:
                 if tracker.name == "tensorboard":
                     np_images = np.stack([np.asarray(img) for img in images])
                     tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                if tracker.name == "wandb":
+                elif tracker.name == "wandb":
                     tracker.log(
                         {
                             "validation": [
-                                wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
+                                wandb.Image(image, caption=f"{i}: {args.validation_prompts[i]}")
                                 for i, image in enumerate(images)
                             ]
                         }
                     )
+                else:
+                    logger.warn(f"image logging not implemented for {tracker.name}")
 
             del pipeline
             torch.cuda.empty_cache()
@@ -932,7 +946,7 @@ def main():
                 break
 
         if accelerator.is_main_process:
-            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
+            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
                 log_validation(unet)
                 
 
@@ -977,6 +991,7 @@ def main():
     generator = torch.Generator(device=accelerator.device)
     if args.seed is not None:
         generator = generator.manual_seed(args.seed)
+    
     images = []
     with torch.cuda.amp.autocast():
         for _ in range(args.num_validation_images):
