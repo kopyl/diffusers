@@ -394,6 +394,11 @@ def parse_args():
         action="store_true",
         help="Whether or not to generate images when checkpointing.",
     )
+    parser.add_argument(
+        "--save_lora_weights_only",
+        action="store_true",
+        help="Whether or not to save only the LoRA weights.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -880,7 +885,9 @@ def main():
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+
+                        if not args.save_lora_weights_only:
+                            accelerator.save_state(save_path)
 
                         unet_lora_state_dict = get_peft_model_state_dict(unet)
 
