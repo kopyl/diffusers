@@ -686,7 +686,7 @@ def main():
             images = []
             for _ in range(args.num_validation_images):
                 images.append(
-                    pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale)[0]
+                    pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0]
                 )
 
             for tracker in accelerator.trackers:
@@ -973,7 +973,7 @@ def main():
         generator = generator.manual_seed(args.seed)
     images = []
     for _ in range(args.num_validation_images):
-        images.append(pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale)[0])
+        images.append(pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0])
 
     if accelerator.is_main_process:
         for tracker in accelerator.trackers:
