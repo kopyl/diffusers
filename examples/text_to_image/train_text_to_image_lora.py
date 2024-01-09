@@ -389,6 +389,30 @@ def parse_args():
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
+    parser.add_argument(
+        "--generate_images_when_checkpointing",
+        action="store_true",
+        help="Whether or not to generate images when checkpointing.",
+    )
+    parser.add_argument(
+        "--save_lora_weights_only",
+        action="store_true",
+        help="Whether or not to save only the LoRA weights.",
+    )
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=40,
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=10,
+    )
+    parser.add_argument(
+        "--running_as_docker",
+        action="store_true",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -636,6 +660,51 @@ def main():
         pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
         input_ids = torch.stack([example["input_ids"] for example in examples])
         return {"pixel_values": pixel_values, "input_ids": input_ids}
+    
+    def log_validation(
+                unet,
+        ):
+            logger.info(
+                f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
+                f" {args.validation_prompt}."
+            )
+            # create pipeline
+            pipeline = DiffusionPipeline.from_pretrained(
+                args.pretrained_model_name_or_path,
+                unet=accelerator.unwrap_model(unet),
+                revision=args.revision,
+                variant=args.variant,
+                torch_dtype=weight_dtype,
+            )
+            pipeline = pipeline.to(accelerator.device)
+            pipeline.set_progress_bar_config(disable=True)
+
+            # run inference
+            generator = torch.Generator(device=accelerator.device)
+            if args.seed is not None:
+                generator = generator.manual_seed(args.seed)
+            images = []
+            for _ in range(args.num_validation_images):
+                images.append(
+                    pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0]
+                )
+
+            for tracker in accelerator.trackers:
+                if tracker.name == "tensorboard":
+                    np_images = np.stack([np.asarray(img) for img in images])
+                    tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+                if tracker.name == "wandb":
+                    tracker.log(
+                        {
+                            "validation": [
+                                wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
+                                for i, image in enumerate(images)
+                            ]
+                        }
+                    )
+
+            del pipeline
+            torch.cuda.empty_cache()
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -830,7 +899,9 @@ def main():
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+
+                        if not args.save_lora_weights_only:
+                            accelerator.save_state(save_path)
 
                         unet_lora_state_dict = get_peft_model_state_dict(unet)
 
@@ -842,55 +913,22 @@ def main():
 
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
+                        if args.generate_images_when_checkpointing:
+                            log_validation(unet)
+
+            if args.running_as_docker:
+                logger.info(f"Step {global_step} - loss: {loss.detach().item()}")
+            else:
+                logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
                 break
 
         if accelerator.is_main_process:
             if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
-                logger.info(
-                    f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-                    f" {args.validation_prompt}."
-                )
-                # create pipeline
-                pipeline = DiffusionPipeline.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    unet=accelerator.unwrap_model(unet),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-                pipeline = pipeline.to(accelerator.device)
-                pipeline.set_progress_bar_config(disable=True)
-
-                # run inference
-                generator = torch.Generator(device=accelerator.device)
-                if args.seed is not None:
-                    generator = generator.manual_seed(args.seed)
-                images = []
-                for _ in range(args.num_validation_images):
-                    images.append(
-                        pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0]
-                    )
-
-                for tracker in accelerator.trackers:
-                    if tracker.name == "tensorboard":
-                        np_images = np.stack([np.asarray(img) for img in images])
-                        tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                    if tracker.name == "wandb":
-                        tracker.log(
-                            {
-                                "validation": [
-                                    wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
-                                    for i, image in enumerate(images)
-                                ]
-                            }
-                        )
-
-                del pipeline
-                torch.cuda.empty_cache()
+                log_validation(unet)
+                
 
     # Save the lora layers
     accelerator.wait_for_everyone()
@@ -935,7 +973,7 @@ def main():
         generator = generator.manual_seed(args.seed)
     images = []
     for _ in range(args.num_validation_images):
-        images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
+        images.append(pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0])
 
     if accelerator.is_main_process:
         for tracker in accelerator.trackers:
