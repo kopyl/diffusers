@@ -518,6 +518,11 @@ def main():
     text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     unet.add_adapter(unet_lora_config)
+    if args.mixed_precision == "fp16":
+        for param in unet.parameters():
+            # only upcast trainable parameters (LoRA) into fp32
+            if param.requires_grad:
+                param.data = param.to(torch.float32)
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -684,10 +689,11 @@ def main():
             if args.seed is not None:
                 generator = generator.manual_seed(args.seed)
             images = []
-            for _ in range(args.num_validation_images):
-                images.append(
-                    pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0]
-                )
+            with torch.cuda.amp.autocast():
+                for _ in range(args.num_validation_images):
+                    images.append(
+                        pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0]
+                    )
 
             for tracker in accelerator.trackers:
                 if tracker.name == "tensorboard":
@@ -972,8 +978,9 @@ def main():
     if args.seed is not None:
         generator = generator.manual_seed(args.seed)
     images = []
-    for _ in range(args.num_validation_images):
-        images.append(pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0])
+    with torch.cuda.amp.autocast():
+        for _ in range(args.num_validation_images):
+            images.append(pipeline(args.validation_prompt, num_inference_steps=args.num_inference_steps, generator=generator, guidance_scale=args.guidance_scale).images[0])
 
     if accelerator.is_main_process:
         for tracker in accelerator.trackers:
