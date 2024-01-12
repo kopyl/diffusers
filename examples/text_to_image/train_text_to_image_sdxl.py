@@ -467,6 +467,11 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
+    parser.add_argument(
+        "--save_unet_only",
+        action="store_true",
+        help="Whether or not to save only the UNet model.",
+    )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
     parser.add_argument(
         "--num_inference_steps",
@@ -640,6 +645,12 @@ def main(args):
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
+
+        if args.save_unet_only:
+            os.makedirs(os.path.join(args.output_dir, "unets"), exist_ok=True)
+
+        elif args.checkpointing_steps is not None:
+            os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
 
         if args.push_to_hub:
             repo_id = create_repo(
@@ -1254,9 +1265,18 @@ def main(args):
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
+                        if args.save_unet_only:
+                            save_path = os.path.join(args.output_dir, "unets", str(global_step))
+                            try:
+                                unet.module.save_pretrained(save_path)
+                            except AttributeError:
+                                unet.save_pretrained(save_path)
+                            logger.info(f"Saved unet to {save_path}")
+                        else:
+                            save_path = os.path.join(args.output_dir, "checkpoints", str(global_step))
+                            accelerator.save_state(save_path)
+                            logger.info(f"Saved state to {save_path}")
+
 
             if args.running_as_docker:
                 logger.info(f"Step {global_step} - loss: {loss.detach().item()}")
