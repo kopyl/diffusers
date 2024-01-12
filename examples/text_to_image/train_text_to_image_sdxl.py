@@ -994,6 +994,8 @@ def main(args):
                 image = pipeline(
                     args.validation_prompts[i],
                     generator=generator,
+                    width=args.resolution,
+                    height=args.resolution,
                 ).images[0]
                 images.append(image)
 
@@ -1287,6 +1289,8 @@ def main(args):
                     image = pipeline(
                         args.validation_prompts[i],
                         generator=generator,
+                        width=args.resolution,
+                        height=args.resolution,
                     ).images[0]
                     images.append(image)
 
