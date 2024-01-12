@@ -1277,6 +1277,9 @@ def main(args):
                             accelerator.save_state(save_path)
                             logger.info(f"Saved state to {save_path}")
 
+                        if args.generate_images_when_checkpointing:
+                            log_validation(unet, ema_unet, epoch)
+
 
             if args.running_as_docker:
                 logger.info(f"Step {global_step} - loss: {loss.detach().item()}")
