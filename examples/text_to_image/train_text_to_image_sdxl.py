@@ -468,6 +468,16 @@ def parse_args(input_args=None):
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=40,
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=10,
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -993,9 +1003,11 @@ def main(args):
             for i in range(len(args.validation_prompts)):
                 image = pipeline(
                     args.validation_prompts[i],
+                    num_inference_steps=args.num_inference_steps,
                     generator=generator,
                     width=args.resolution,
                     height=args.resolution,
+                    guidance_scale=args.guidance_scale,
                 ).images[0]
                 images.append(image)
 
@@ -1288,9 +1300,11 @@ def main(args):
                 for i in range(len(args.validation_prompts)):
                     image = pipeline(
                         args.validation_prompts[i],
+                        num_inference_steps=args.num_inference_steps,
                         generator=generator,
                         width=args.resolution,
                         height=args.resolution,
+                        guidance_scale=args.guidance_scale,
                     ).images[0]
                     images.append(image)
 
