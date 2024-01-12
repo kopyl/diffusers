@@ -1002,6 +1002,7 @@ def main(args):
             revision=args.revision,
             variant=args.variant,
             torch_dtype=weight_dtype,
+            safety_checker=None,
         )
         if args.prediction_type is not None:
             scheduler_args = {"prediction_type": args.prediction_type}
@@ -1315,6 +1316,7 @@ def main(args):
             revision=args.revision,
             variant=args.variant,
             torch_dtype=weight_dtype,
+            safety_checker=None,
         )
         if args.prediction_type is not None:
             scheduler_args = {"prediction_type": args.prediction_type}
