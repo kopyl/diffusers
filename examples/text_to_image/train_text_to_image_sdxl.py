@@ -478,6 +478,10 @@ def parse_args(input_args=None):
         type=float,
         default=10,
     )
+    parser.add_argument(
+        "--running_as_docker",
+        action="store_true",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -1254,8 +1258,11 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
+            if args.running_as_docker:
+                logger.info(f"Step {global_step} - loss: {loss.detach().item()}")
+            else:
+                logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
                 break
