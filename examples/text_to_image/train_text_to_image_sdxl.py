@@ -472,6 +472,11 @@ def parse_args(input_args=None):
         action="store_true",
         help="Whether or not to save only the UNet model.",
     )
+    parser.add_argument(
+        "--generate_images_when_checkpointing",
+        action="store_true",
+        help="Whether or not to generate images when checkpointing.",
+    )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
     parser.add_argument(
         "--num_inference_steps",
