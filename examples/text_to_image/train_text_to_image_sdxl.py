@@ -487,6 +487,10 @@ def parse_args(input_args=None):
         "--running_as_docker",
         action="store_true",
     )
+    parser.add_argument(
+        "--skip_resizing",
+        action="store_true",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -878,7 +882,8 @@ def main(args):
         crop_top_lefts = []
         for image in images:
             original_sizes.append((image.height, image.width))
-            image = train_resize(image)
+            if not args.skip_resizing:
+                image = train_resize(image)
             if args.center_crop:
                 y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
                 x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
