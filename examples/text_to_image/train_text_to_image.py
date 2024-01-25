@@ -47,6 +47,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel, compute_snr
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid
 from diffusers.utils.import_utils import is_xformers_available
+from functools import partial
 
 
 if is_wandb_available():
@@ -138,8 +139,37 @@ More information on all the CLI arguments and the environment are available on y
         f.write(yaml + model_card)
 
 
-def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
+def get_deepspeed_plugin():
+    if accelerate.state.is_initialized():
+        return AcceleratorState().deepspeed_plugin
+    else:
+        return None
+
+
+def deepspeed_zero_init_disabled_context_manager():
+    """
+    returns either a context list that includes one that will disable zero.Init or an empty context list
+    """
+    deepspeed_plugin = get_deepspeed_plugin()
+    if deepspeed_plugin is None:
+        return []
+
+    return [deepspeed_plugin.zero3_init_context_manager(enable=False)]
+
+
+def log_validation(tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
+
+    with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
+        text_encoder = CLIPTextModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
+        )
+        vae = AutoencoderKL.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+        )
+
+        text_encoder.to(accelerator.device)
+        vae.to(accelerator.device)
 
     pipeline = StableDiffusionPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -194,7 +224,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         else:
             logger.warn(f"image logging not implemented for {tracker.name}")
 
-    del pipeline
+    del pipeline, text_encoder, vae
     torch.cuda.empty_cache()
 
     return images
@@ -209,7 +239,7 @@ def parse_args():
         "--pretrained_model_name_or_path",
         type=str,
         default=None,
-        required=True,
+        required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
@@ -482,6 +512,10 @@ def parse_args():
         help="Run validation every X epochs.",
     )
     parser.add_argument(
+        "--disable_validation_on_epoch_end",
+        action="store_true",
+    )
+    parser.add_argument(
         "--tracker_project_name",
         type=str,
         default="text2image-fine-tune",
@@ -607,22 +641,6 @@ def main():
         args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
     )
 
-    def get_deepspeed_plugin():
-        if accelerate.state.is_initialized():
-            return AcceleratorState().deepspeed_plugin
-        else:
-            return None
-
-    def deepspeed_zero_init_disabled_context_manager():
-        """
-        returns either a context list that includes one that will disable zero.Init or an empty context list
-        """
-        deepspeed_plugin = get_deepspeed_plugin()
-        if deepspeed_plugin is None:
-            return []
-
-        return [deepspeed_plugin.zero3_init_context_manager(enable=False)]
-
     # Currently Accelerate doesn't know how to handle multiple models under Deepspeed ZeRO stage 3.
     # For this to work properly all models must be run through `accelerate.prepare`. But accelerate
     # will try to assign the same optimizer with the same weights to all models during
@@ -632,13 +650,6 @@ def main():
     # frozen models from being partitioned during `zero.Init` which gets called during
     # `from_pretrained` So CLIPTextModel and AutoencoderKL will not enjoy the parameter sharding
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
-    with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
-        text_encoder = CLIPTextModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
-        )
-        vae = AutoencoderKL.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
-        )
 
     if args.train_unet_from_scratch_config is not None:
         config = UNet2DConditionModel.load_config(args.pretrained_model_name_or_path, subfolder="unet")
@@ -656,12 +667,7 @@ def main():
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
 
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
-    vae.to(accelerator.device, dtype=weight_dtype)
-
     # Freeze vae and text_encoder and set unet to trainable
-    vae.requires_grad_(False)
-    text_encoder.requires_grad_(False)
     unet.train()
 
     # Create EMA for the unet.
@@ -853,7 +859,7 @@ def main():
      # For mixed precision training we cast all non-trainable weigths (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
 
-    def map_fn(batch):  
+    def map_fn(batch, vae=None, text_encoder=None):
         batch_images = [image.convert("RGB") for image in batch['image']]
         pixel_values = [train_transforms(image) for image in batch_images]
         pixel_values = (
@@ -877,8 +883,6 @@ def main():
     
         batch['latents'] = latents
         batch['encoder_hidden_states'] = encoder_hidden_states
-
-        print('batch processed')
     
         return batch
     
@@ -901,14 +905,30 @@ def main():
         # Set the training transforms
             
         if not is_dataset_pre_computed(dataset["train"]):
+            with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
+                text_encoder = CLIPTextModel.from_pretrained(
+                    args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
+                )
+
+                print("\n\nInitializing VAE\n\n")
+                
+                vae = AutoencoderKL.from_pretrained(
+                    args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+                )
+                text_encoder = text_encoder.to(accelerator.device, dtype=weight_dtype)
+                vae = vae.to(accelerator.device, dtype=weight_dtype)
+            
             train_dataset = dataset["train"].map(
-                map_fn, batched=True, keep_in_memory=True, batch_size=8
+                map_fn, batched=True, keep_in_memory=True, batch_size=8, fn_kwargs={"vae": vae, "text_encoder": text_encoder}
             )
             # train_dataset = train_dataset.remove_columns([image_column, caption_column])
             if args.train_precomputed_data_dir is not None:
                 DatasetDict({
                     'train': train_dataset.with_format(None)
                 }).save_to_disk(args.train_precomputed_data_dir)
+
+            del text_encoder, vae
+
         else:
             train_dataset = dataset["train"]
 
@@ -1102,7 +1122,7 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
 
-                if global_step % args.checkpointing_steps == 0:
+                if global_step % args.checkpointing_steps == 0 and global_step:
                     deepspeed_plugin = get_deepspeed_plugin()
                     if accelerator.is_main_process or deepspeed_plugin is not None:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -1138,10 +1158,10 @@ def main():
                             logger.info(f"Saved state to {save_path}")
 
 
+                        print("\n\nLOGGING VALIDATION 1\n\n\n")
+
                         if args.generate_images_when_checkpointing:
                             log_validation(
-                                vae,
-                                text_encoder,
                                 tokenizer,
                                 unet,
                                 args,
@@ -1160,14 +1180,15 @@ def main():
                 break
 
         if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            if args.validation_prompts is not None and epoch % args.validation_epochs == 0 and not args.disable_validation_on_epoch_end:
                 if args.use_ema:
                     # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
                     ema_unet.store(unet.parameters())
                     ema_unet.copy_to(unet.parameters())
+                
+                print("\n\nLOGGING VALIDATION 2\n\n\n")
+                    
                 log_validation(
-                    vae,
-                    text_encoder,
                     tokenizer,
                     unet,
                     args,
