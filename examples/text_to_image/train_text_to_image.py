@@ -789,27 +789,54 @@ def main():
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
-            data_dir=args.train_data_dir,
-        )
-    elif args.train_precomputed_data_dir is not None and os.path.exists(args.train_precomputed_data_dir):
-        dataset = load_from_disk(args.train_precomputed_data_dir)
-    else:
-        data_files = {}
-        if args.train_data_dir is not None:
-            data_files["train"] = os.path.join(args.train_data_dir, "**")
-        dataset = load_dataset(
-            "imagefolder",
-            data_files=data_files,
-            cache_dir=args.cache_dir,
-        )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+    def _load_dataset():
+        if args.train_precomputed_data_dir is not None and os.path.exists(args.train_precomputed_data_dir):
+            dataset = load_from_disk(args.train_precomputed_data_dir)
+        elif args.dataset_name is not None:
+            # Downloading and loading a dataset from the hub.
+            dataset = load_dataset(
+                args.dataset_name,
+                args.dataset_config_name,
+                cache_dir=args.cache_dir,
+                data_dir=args.train_data_dir,
+            )
+        else:
+            data_files = {}
+            if args.train_data_dir is not None:
+                data_files["train"] = os.path.join(args.train_data_dir, "**")
+            dataset = load_dataset(
+                "imagefolder",
+                data_files=data_files,
+                cache_dir=args.cache_dir,
+            )
+            # See more about loading custom images at
+            # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+        if args.prepend_characters_to_all_prompts is not None:
+            dataset = dataset.map(mapping, batched=True, with_indices=True, keep_in_memory=True)
+    
+        # Preprocessing the datasets.
+        # We need to tokenize inputs and targets.
+        column_names = dataset["train"].column_names
+    
+        # 6. Get the column names for input/target.
+        dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
+        if args.image_column is None:
+            image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
+        else:
+            image_column = args.image_column
+            if image_column not in column_names:
+                raise ValueError(
+                    f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
+                )
+        if args.caption_column is None:
+            caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+        else:
+            caption_column = args.caption_column
+            if caption_column not in column_names:
+                raise ValueError(
+                    f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
+                )
+        return dataset
 
 
     def mapping(batch, indices):
@@ -824,38 +851,11 @@ def main():
             print(f'{new_text_sample=}')
         return batch
 
-
-    if args.prepend_characters_to_all_prompts is not None:
-        dataset = dataset.map(mapping, batched=True, with_indices=True, keep_in_memory=True)
-
-    # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
-
-    # 6. Get the column names for input/target.
-    dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
-    if args.image_column is None:
-        image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-            )
-    if args.caption_column is None:
-        caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
-            )
-
     # Preprocessing the datasets.
     # We need to tokenize input captions and transform the images.
     def tokenize_captions(examples, is_train=True):
         captions = []
-        for caption in examples[caption_column]:
+        for caption in examples[args.caption_column]:
             if isinstance(caption, str):
                 captions.append(caption)
             elif isinstance(caption, (list, np.ndarray)):
@@ -863,7 +863,7 @@ def main():
                 captions.append(random.choice(caption) if is_train else caption[0])
             else:
                 raise ValueError(
-                    f"Caption column `{caption_column}` should contain either strings or lists of strings."
+                    f"Caption column `{args.caption_column}` should contain either strings or lists of strings."
                 )
         inputs = tokenizer(
             captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
@@ -889,7 +889,7 @@ def main():
             image.convert(
                 "RGB" if args.unet_channels_count == "3" else "L"
             )
-            for image in batch[image_column]
+            for image in batch[args.image_column]
         ]
         pixel_values = [train_transforms(image) for image in batch_images]
         pixel_values = (
@@ -909,7 +909,7 @@ def main():
         latents = latents * vae.config.scaling_factor
     
         inputs = tokenizer(
-                batch['text'], max_length=tokenizer.model_max_length,
+                batch[args.caption_column], max_length=tokenizer.model_max_length,
                 padding="max_length",
                 truncation=True,
                 return_tensors="pt"
@@ -935,6 +935,7 @@ def main():
         return all(assertions)
 
     with accelerator.main_process_first():
+        dataset = _load_dataset()
         if args.max_train_samples is not None:
             dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
         # Set the training transforms
@@ -969,6 +970,7 @@ def main():
 
         else:
             train_dataset = dataset["train"]
+        accelerator.wait_for_everyone()
 
     def collate_fn(examples):
         latents = torch.stack([torch.tensor(example['latents']) for example in examples])
