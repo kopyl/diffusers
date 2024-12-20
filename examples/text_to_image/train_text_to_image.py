@@ -216,6 +216,12 @@ def parse_args():
         type=str,
     )
     parser.add_argument(
+        "--pretrained_vae_model_name_or_path",
+        type=str,
+        default=None,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -629,10 +635,14 @@ def main():
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         text_encoder = CLIPTextModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
-        )
+        )   
         vae = AutoencoderKL.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+            (
+                args.pretrained_vae_model_name_or_path if args.pretrained_vae_model_name_or_path else args.pretrained_model_name_or_path
+            ),
+            subfolder="vae", revision=args.revision, variant=args.variant
         )
+        print(f"{vae.config=}")
 
     if args.train_unet_from_scratch_config is not None:
         config = UNet2DConditionModel.load_config(args.pretrained_model_name_or_path, subfolder="unet")
