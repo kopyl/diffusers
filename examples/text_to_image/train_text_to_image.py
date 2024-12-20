@@ -1074,13 +1074,12 @@ def main():
                     if accelerator.is_main_process or deepspeed_plugin is not None:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                            checkpoints = os.listdir(os.path.join(args.output_dir, "unets" if args.save_unet_only else "checkpoints"))
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x))
 
                             # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
                             if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit
                                 removing_checkpoints = checkpoints[0:num_to_remove]
 
                                 logger.info(
@@ -1089,7 +1088,7 @@ def main():
                                 logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                    removing_checkpoint = os.path.join(args.output_dir, "unets" if args.save_unet_only else "checkpoints", removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
                         if args.save_unet_only:
