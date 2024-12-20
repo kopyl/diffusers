@@ -164,9 +164,11 @@ def log_validation(tokenizer, unet, args, accelerator, weight_dtype, epoch):
         text_encoder = CLIPTextModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
         )
-        vae = AutoencoderKL.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
-        )
+        if args.pretrained_vae_model_name_or_path:
+            vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
+        else:
+            vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
+
 
         text_encoder.to(accelerator.device)
         vae.to(accelerator.device)
@@ -663,12 +665,6 @@ def main():
     # `from_pretrained` So CLIPTextModel and AutoencoderKL will not enjoy the parameter sharding
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
 
-    if args.pretrained_vae_model_name_or_path:
-        vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
-    else:
-        vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
-    print(f"{vae.config=}")
-
     if args.pretrained_unet_model_name_or_path is not None:
         unet = UNet2DConditionModel.from_pretrained(args.pretrained_unet_model_name_or_path)
     else:
@@ -933,9 +929,11 @@ def main():
 
                 print("\n\nInitializing VAE\n\n")
                 
-                vae = AutoencoderKL.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
-                )
+                if args.pretrained_vae_model_name_or_path:
+                    vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
+                else:
+                    vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
+                print(f"{vae.config=}")
                 text_encoder = text_encoder.to(accelerator.device, dtype=weight_dtype)
                 vae = vae.to(accelerator.device, dtype=weight_dtype)
             
