@@ -443,6 +443,12 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--unet_channels_count",
+        type=str,
+        default="1",
+        choices=["1", "3"],
+    )
+    parser.add_argument(
         "--report_to",
         type=str,
         default="tensorboard",
@@ -847,7 +853,12 @@ def main():
     )
 
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
+        images = [
+            image.convert(
+                "RGB" if args.unet_channels_count == "3" else "L"
+            )
+            for image in examples[image_column]
+        ]
         examples["pixel_values"] = [train_transforms(image) for image in images]
         examples["input_ids"] = tokenize_captions(examples)
         return examples
