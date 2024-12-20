@@ -169,6 +169,7 @@ def log_validation(tokenizer, unet, args, accelerator, weight_dtype, epoch):
         else:
             vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
 
+        vae.config.scaling_factor = args.vae_scaling_factor
 
         text_encoder.to(accelerator.device)
         vae.to(accelerator.device)
@@ -253,6 +254,11 @@ def parse_args():
         type=str,
         default=None,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        '--vae_scaling_factor',
+        type=float,
+        default=0.18215,
     )
     parser.add_argument(
         "--revision",
@@ -933,6 +939,7 @@ def main():
                     vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
                 else:
                     vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
+                vae.config.scaling_factor = args.vae_scaling_factor
                 print(f"{vae.config=}")
                 text_encoder = text_encoder.to(accelerator.device, dtype=weight_dtype)
                 vae = vae.to(accelerator.device, dtype=weight_dtype)
