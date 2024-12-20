@@ -488,6 +488,12 @@ def parse_args():
         choices=["1", "3"],
     )
     parser.add_argument(
+        "--vae_latent_distribution",
+        type=str,
+        default="sample",
+        choices=["sample", "mean"],
+    )
+    parser.add_argument(
         "--report_to",
         type=str,
         default="tensorboard",
@@ -890,10 +896,16 @@ def main():
             torch.stack(pixel_values)
             .to(accelerator.device)
         )
-        latents = (
-            vae.encode(pixel_values.to(weight_dtype))
-            .latent_dist.sample()
-        )
+        if args.vae_latent_distribution == "mean":
+            latents = (
+                vae.encode(pixel_values.to(weight_dtype))
+                .latent_dist.mean
+            )
+        else:
+            latents = (
+                vae.encode(pixel_values.to(weight_dtype))
+                .latent_dist.sample()
+            )
         latents = latents * vae.config.scaling_factor
     
         inputs = tokenizer(
