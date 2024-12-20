@@ -960,7 +960,7 @@ def main():
             train_dataset = dataset["train"].map(
                 map_fn, batched=True, keep_in_memory=True, batch_size=8, fn_kwargs={"vae": vae, "text_encoder": text_encoder}
             )
-            # train_dataset = train_dataset.remove_columns([image_column, caption_column])
+            train_dataset = train_dataset.remove_columns([args.image_column, args.caption_column])
             if args.train_precomputed_data_dir is not None:
                 DatasetDict({
                     'train': train_dataset.with_format(None)
