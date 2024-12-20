@@ -636,6 +636,12 @@ def main():
         text_encoder = CLIPTextModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
         )   
+        if args.pretrained_vae_model_name_or_path:
+            vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
+        else:
+            vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
+
+
         vae = AutoencoderKL.from_pretrained(
             (
                 args.pretrained_vae_model_name_or_path if args.pretrained_vae_model_name_or_path else args.pretrained_model_name_or_path
