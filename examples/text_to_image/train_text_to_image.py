@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
+import pretty_errors
 import argparse
 import logging
 import math
@@ -32,7 +33,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict, load_from_disk
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from torchvision import transforms
@@ -46,6 +47,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel, compute_snr
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, make_image_grid
 from diffusers.utils.import_utils import is_xformers_available
+from functools import partial
 
 
 if is_wandb_available():
@@ -137,8 +139,37 @@ More information on all the CLI arguments and the environment are available on y
         f.write(yaml + model_card)
 
 
-def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
+def get_deepspeed_plugin():
+    if accelerate.state.is_initialized():
+        return AcceleratorState().deepspeed_plugin
+    else:
+        return None
+
+
+def deepspeed_zero_init_disabled_context_manager():
+    """
+    returns either a context list that includes one that will disable zero.Init or an empty context list
+    """
+    deepspeed_plugin = get_deepspeed_plugin()
+    if deepspeed_plugin is None:
+        return []
+
+    return [deepspeed_plugin.zero3_init_context_manager(enable=False)]
+
+
+def log_validation(tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
+
+    with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
+        text_encoder = CLIPTextModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
+        )
+        vae = AutoencoderKL.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+        )
+
+        text_encoder.to(accelerator.device)
+        vae.to(accelerator.device)
 
     pipeline = StableDiffusionPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -193,7 +224,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         else:
             logger.warn(f"image logging not implemented for {tracker.name}")
 
-    del pipeline
+    del pipeline, text_encoder, vae
     torch.cuda.empty_cache()
 
     return images
@@ -208,7 +239,7 @@ def parse_args():
         "--pretrained_model_name_or_path",
         type=str,
         default=None,
-        required=True,
+        required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
@@ -493,6 +524,10 @@ def parse_args():
         help="Run validation every X epochs.",
     )
     parser.add_argument(
+        "--disable_validation_on_epoch_end",
+        action="store_true",
+    )
+    parser.add_argument(
         "--tracker_project_name",
         type=str,
         default="text2image-fine-tune",
@@ -531,6 +566,11 @@ def parse_args():
         type=str,
         default=None,
     )
+    parser.add_argument(
+        "--train_precomputed_data_dir",
+        type=str,
+        default=None,
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -538,7 +578,7 @@ def parse_args():
         args.local_rank = env_local_rank
 
     # Sanity checks
-    if args.dataset_name is None and args.train_data_dir is None:
+    if args.dataset_name is None and args.train_data_dir is None and args.train_precomputed_data_dir is None and not os.path.exists(args.train_precomputed_data_dir):
         raise ValueError("Need either a dataset name or a training folder.")
 
     # default to using the same revision for the non-ema model if not specified
@@ -613,22 +653,6 @@ def main():
         args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
     )
 
-    def get_deepspeed_plugin():
-        if accelerate.state.is_initialized():
-            return AcceleratorState().deepspeed_plugin
-        else:
-            return None
-
-    def deepspeed_zero_init_disabled_context_manager():
-        """
-        returns either a context list that includes one that will disable zero.Init or an empty context list
-        """
-        deepspeed_plugin = get_deepspeed_plugin()
-        if deepspeed_plugin is None:
-            return []
-
-        return [deepspeed_plugin.zero3_init_context_manager(enable=False)]
-
     # Currently Accelerate doesn't know how to handle multiple models under Deepspeed ZeRO stage 3.
     # For this to work properly all models must be run through `accelerate.prepare`. But accelerate
     # will try to assign the same optimizer with the same weights to all models during
@@ -638,23 +662,12 @@ def main():
     # frozen models from being partitioned during `zero.Init` which gets called during
     # `from_pretrained` So CLIPTextModel and AutoencoderKL will not enjoy the parameter sharding
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
-    with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
-        text_encoder = CLIPTextModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
-        )   
-        if args.pretrained_vae_model_name_or_path:
-            vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
-        else:
-            vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
 
-
-        vae = AutoencoderKL.from_pretrained(
-            (
-                args.pretrained_vae_model_name_or_path if args.pretrained_vae_model_name_or_path else args.pretrained_model_name_or_path
-            ),
-            subfolder="vae", revision=args.revision, variant=args.variant
-        )
-        print(f"{vae.config=}")
+    if args.pretrained_vae_model_name_or_path:
+        vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path)
+    else:
+        vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant)
+    print(f"{vae.config=}")
 
     if args.pretrained_unet_model_name_or_path is not None:
         unet = UNet2DConditionModel.from_pretrained(args.pretrained_unet_model_name_or_path)
@@ -663,9 +676,15 @@ def main():
             args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision
         )
 
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+        args.mixed_precision = accelerator.mixed_precision
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+        args.mixed_precision = accelerator.mixed_precision
+
     # Freeze vae and text_encoder and set unet to trainable
-    vae.requires_grad_(False)
-    text_encoder.requires_grad_(False)
     unet.train()
 
     # Create EMA for the unet.
@@ -770,6 +789,8 @@ def main():
             cache_dir=args.cache_dir,
             data_dir=args.train_data_dir,
         )
+    elif args.train_precomputed_data_dir is not None and os.path.exists(args.train_precomputed_data_dir):
+        dataset = load_from_disk(args.train_precomputed_data_dir)
     else:
         data_files = {}
         if args.train_data_dir is not None:
@@ -852,36 +873,101 @@ def main():
         ]
     )
 
-    def preprocess_train(examples):
-        images = [
+     # For mixed precision training we cast all non-trainable weigths (vae, non-lora text_encoder and non-lora unet) to half-precision
+    # as these weights are only used for inference, keeping weights in full precision is not required.
+
+    def map_fn(batch, vae=None, text_encoder=None):
+        batch_images = [
             image.convert(
                 "RGB" if args.unet_channels_count == "3" else "L"
             )
-            for image in examples[image_column]
+            for image in batch[image_column]
         ]
-        examples["pixel_values"] = [train_transforms(image) for image in images]
-        examples["input_ids"] = tokenize_captions(examples)
-        return examples
+        pixel_values = [train_transforms(image) for image in batch_images]
+        pixel_values = (
+            torch.stack(pixel_values)
+            .to(accelerator.device)
+        )
+        latents = (
+            vae.encode(pixel_values.to(weight_dtype))
+            .latent_dist.sample()
+        )
+        latents = latents * vae.config.scaling_factor
+    
+        inputs = tokenizer(
+                batch['text'], max_length=tokenizer.model_max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt"
+            )
+        inputs.to(accelerator.device)
+        encoder_hidden_states = text_encoder(inputs.input_ids)[0]
+    
+        batch['latents'] = latents
+        batch['encoder_hidden_states'] = encoder_hidden_states
+    
+        return batch
+    
+
+    def is_dataset_pre_computed(dataset):
+        precomputed_features = [
+            "latents",
+            "encoder_hidden_states",
+        ]
+        assertions = [
+            feature in dataset.features
+            for feature in precomputed_features
+        ]
+        return all(assertions)
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
         # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+            
+        if not is_dataset_pre_computed(dataset["train"]):
+            with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
+                text_encoder = CLIPTextModel.from_pretrained(
+                    args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
+                )
+
+                print("\n\nInitializing VAE\n\n")
+                
+                vae = AutoencoderKL.from_pretrained(
+                    args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+                )
+                text_encoder = text_encoder.to(accelerator.device, dtype=weight_dtype)
+                vae = vae.to(accelerator.device, dtype=weight_dtype)
+            
+            train_dataset = dataset["train"].map(
+                map_fn, batched=True, keep_in_memory=True, batch_size=8, fn_kwargs={"vae": vae, "text_encoder": text_encoder}
+            )
+            # train_dataset = train_dataset.remove_columns([image_column, caption_column])
+            if args.train_precomputed_data_dir is not None:
+                DatasetDict({
+                    'train': train_dataset.with_format(None)
+                }).save_to_disk(args.train_precomputed_data_dir)
+
+            del text_encoder, vae
+
+        else:
+            train_dataset = dataset["train"]
 
     def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids}
+        latents = torch.stack([torch.tensor(example['latents']) for example in examples])
+        encoder_hidden_states = torch.stack([torch.tensor(example['encoder_hidden_states']) for example in examples])
+        return {
+            "latents": latents,
+            "encoder_hidden_states": encoder_hidden_states,
+        }
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
+        collate_fn=collate_fn,
     )
 
     # Scheduler and math around the number of training steps.
@@ -906,19 +992,7 @@ def main():
     if args.use_ema:
         ema_unet.to(accelerator.device)
 
-    # For mixed precision training we cast all non-trainable weigths (vae, non-lora text_encoder and non-lora unet) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-        args.mixed_precision = accelerator.mixed_precision
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-        args.mixed_precision = accelerator.mixed_precision
-
     # Move text_encode and vae to gpu and cast to weight_dtype
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
-    vae.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -988,8 +1062,9 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(weight_dtype)).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
+
+                latents = batch['latents']
+                encoder_hidden_states = batch['encoder_hidden_states']
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -1013,7 +1088,6 @@ def main():
                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"])[0]
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
@@ -1069,7 +1143,7 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
 
-                if global_step % args.checkpointing_steps == 0:
+                if global_step % args.checkpointing_steps == 0 and global_step:
                     deepspeed_plugin = get_deepspeed_plugin()
                     if accelerator.is_main_process or deepspeed_plugin is not None:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -1104,10 +1178,10 @@ def main():
                             logger.info(f"Saved state to {save_path}")
 
 
+                        print("\n\nLOGGING VALIDATION 1\n\n\n")
+
                         if args.generate_images_when_checkpointing:
                             log_validation(
-                                vae,
-                                text_encoder,
                                 tokenizer,
                                 unet,
                                 args,
@@ -1126,14 +1200,15 @@ def main():
                 break
 
         if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            if args.validation_prompts is not None and epoch % args.validation_epochs == 0 and not args.disable_validation_on_epoch_end:
                 if args.use_ema:
                     # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
                     ema_unet.store(unet.parameters())
                     ema_unet.copy_to(unet.parameters())
+                
+                print("\n\nLOGGING VALIDATION 2\n\n\n")
+                    
                 log_validation(
-                    vae,
-                    text_encoder,
                     tokenizer,
                     unet,
                     args,
