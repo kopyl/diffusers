@@ -817,28 +817,29 @@ def main():
         if args.prepend_characters_to_all_prompts is not None:
             dataset = dataset.map(mapping, batched=True, with_indices=True, keep_in_memory=True)
     
+        if not args.train_precomputed_data_dir and not os.path.exists(args.train_precomputed_data_dir):
         # Preprocessing the datasets.
         # We need to tokenize inputs and targets.
-        column_names = dataset["train"].column_names
-    
-        # 6. Get the column names for input/target.
-        dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
-        if args.image_column is None:
-            image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-        else:
-            image_column = args.image_column
-            if image_column not in column_names:
-                raise ValueError(
-                    f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-                )
-        if args.caption_column is None:
-            caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-        else:
-            caption_column = args.caption_column
-            if caption_column not in column_names:
-                raise ValueError(
-                    f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
-                )
+            column_names = dataset["train"].column_names
+        
+            # 6. Get the column names for input/target.
+            dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
+            if args.image_column is None:
+                image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
+            else:
+                image_column = args.image_column
+                if image_column not in column_names:
+                    raise ValueError(
+                        f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
+                    )
+            if args.caption_column is None:
+                caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+            else:
+                caption_column = args.caption_column
+                if caption_column not in column_names:
+                    raise ValueError(
+                        f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
+                    )
         return dataset
 
 
